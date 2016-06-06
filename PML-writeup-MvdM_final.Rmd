@@ -1,0 +1,121 @@
+---
+title: "Practical_Machine_Learning_Write-up"
+author: "Metin Mandele"
+date: "June 6, 2016"
+output: html_document
+---
+
+```{r, echo=FALSE}
+setwd("C:/Users/Metin/Documents/Coursera/PracticalMachineLearning")
+set.seed(989)
+ library(caret); library(rpart); library("e1071"); 
+training <- read.csv("pml-training.csv")
+notselect <- colnames(training)[colSums(is.na(training)) > 14000]
+trainfilter <- training[,-which(names(training) %in% notselect)]
+nzv <- nearZeroVar(trainfilter, saveMetrics = FALSE) 
+trainfiltervar <- trainfilter[, -nzv]
+
+cor.prob <- function (X, dfr = nrow(X) - 2) {
+  R <- cor(X, use="pairwise.complete.obs")
+  above <- row(R) < col(R)
+  r2 <- R[above]^2
+  Fstat <- r2 * dfr/(1 - r2)
+  R[above] <- 1 - pf(Fstat, 1, dfr)
+  R[row(R) == col(R)] <- NA
+  R
+}
+
+## Use this to dump the cor.prob output to a 4 column matrix
+## with row/column indices, correlation, and p-value.
+## See StackOverflow question: http://goo.gl/fCUcQ
+flattenSquareMatrix <- function(m) {
+  if( (class(m) != "matrix") | (nrow(m) != ncol(m))) stop("Must be a square matrix.") 
+  if(!identical(rownames(m), colnames(m))) stop("Row and column names must be equal.")
+  ut <- upper.tri(m)
+  data.frame(i = rownames(m)[row(m)[ut]],
+             j = rownames(m)[col(m)[ut]],
+             cor=t(m)[ut],
+             p=m[ut])
+}
+
+```
+
+
+**Intro**  
+The aim is to predict how participants performed a series of exercises. The participants were instructed beforehand to perform a series of exercises in 5 different ways, labelled with letters "A" through "E" in the outcome variable "Classe". A variety of measurement and identification data was collected, which could all be used to predict the outcome variable. It must be mentioned as well that during analysis, there were computer hardware limitations which altered the choice of variables and analysis functions, generally due to working memory (3 gigabytes RAM). 
+
+
+**Data Exploration**  
+Data exploration was performed on the training set only. First, data was analyzed for the presence of NA values. In variables with NA values, this was always ~98% the case. As a result, preprocessing data with K-nearest neighbor imputation would result in an error when these variables were included. The solution was to exclude the variables with NA values.  
+```
+notselect <- colnames(training)[colSums(is.na(training)) > 14000]
+trainfilter <- training[,-which(names(training) %in% notselect)]
+```
+
+Next, data with near zero variance was filtered and excluded, as this would be assumed to show few trends at the cost of memory and processing power.
+```
+nzv <- nearZeroVar(trainfilter, saveMetrics = FALSE) 
+trainfiltervar <- trainfilter[, -nzv]
+
+```
+Also, The "X" variable was excluded, as this was assumed to count the order in which the exercises were performed. This was confirmed by using head() and boxplot() on the "X" variable. The assumption was that the test cases would have an "X" value that did not necessarily increase linearly (which was the case in the given data), and that including this in the algorithm would decrease the test set accuracy.
+
+```{r}
+head(trainfiltervar$X)
+```
+
+In order to find variables with correlations, the cor() function was used to produce a matrix with 2-way correlations, after factor variables had been converted to dummy variables.
+
+```{r}
+dummytrainfiltervar <- dummyVars(" ~ .", data = trainfiltervar)
+dummiedtrainfiltervar <- data.frame(predict(dummytrainfiltervar, newdata = trainfiltervar))
+FlatCorrelations <- flattenSquareMatrix(cor.prob(dummiedtrainfiltervar))
+```
+
+A function by Steve Turner from GitHub (see https://gist.github.com/stephenturner/3492773 ), cor.prob(), was used to find the associated p-values for each correlation. The resulting matrix was outputted to a spreadsheet format using write.csv(). As the below image shows using conditional formatting, most correlations, however small, were significant below p<0.01 threshold. Of course, this assumed that factor variables had an additive effect on other variables, which could be incorrect. 
+
+<img src="C:\\Users\\Metin\\Documents\\Coursera\\PracticalMachineLearning\\correlations_screenshot_sub.png">
+
+Next, in order to find distributions and see whether data analysis with parameters could be used (such as linear discriminant analysis), boxplots and histograms were made of several variables. Most variables showed skewness-
+
+```{r, echo=FALSE}
+hist(trainfiltervar$roll_belt)
+```
+
+Or they appeared to show bivariate distributions with two separate means, with many values near zero or negative. Not all variables seemed to have multiple curves, and there was no clear pattern between variables, so they could not be grouped or split. The frequency of near zero and negative values also made transforming these variables by log() or boxcox() difficult. Thus the data was kept like this. 
+
+**Data Analysis**  
+The outcome variable had 5 different classes. This excluded General Linear Model analysis. Several variables did not satisfy normal distribution even with transformation and normalization. This excluded parameter based analysis such as Linear Discriminant Analysis. Due to memory limitations, Random Forests nor Bagged Trees could not be run. Decision Trees were chosen for their flexibility as well as their simplicity in explaining data trends. A Gradient Boosted Model was performed to get maximum performance. .
+
+First the Decision Tree was run. Due to memory limitations the tree had to be pruned at a complexity parameter of 0.05. The complexity parameter may be broadly defined as the minimum threshold of misclassification risk that a tree decides to split a node on (see https://cran.r-project.org/web/packages/rpart/vignettes/longintro.pdf ). Although an optimal complexity paramater for the best out of sample error may be estimated using cross validation (see link: http://sites.stat.psu.edu/~jiali/course/stat597e/notes2/trees2.pdf ), this was not done due to hardware limitations. An in-sample error of ~0.45 was found using the resulting tree. The out of sample error using the test set was ~0.67.
+```
+TreeFitComplex <- train(
+                  classe ~.,
+                  data=trainfiltervar[c(-1)],
+                  method="rpart",
+                  cp= 0.05,
+                  trControl=trainControl(method="cv",number=5)
+                  )
+```
+
+
+The Gradient Boosted Model was performed with cross validation.   An in-sample accuracy of ~0.996 was found using this model. The out of sample error using the test set was ~0.997. 
+```
+GBMFitCV <- train(
+                  classe ~ .,
+                  data=trainfiltervar[c(-1)],
+                  trControl=trainControl(method="cv",number=5),
+                  method="gbm"
+                  )
+```
+
+**Conclusion**  
+The Gradient Boosted Model was chosen because it greatly outperformed the Decision Tree, although it did not give any direct information on trends in the data. It also required much less memory than Random Forest methods. The resulting accuracy is far above chance (P >> 0.2) and is also found in the test set.
+
+**Cross Validation**
+
+Cross Validation was used to compare the effectiveness of type of prediction function used. A small number of folds was used to reduce bias versus variance. Although Cross Validation could be used to create an optimal tree that balances accuracy versus performance, considering the complexity of the data set and the hardware limitations, this was not performed. 
+  
+Thank you for reading this assignment. I hope you had as much fun getting the know the data as I did!
+
+
